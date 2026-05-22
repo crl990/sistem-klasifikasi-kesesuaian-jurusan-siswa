@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -248,7 +247,7 @@ def rekomendasikan_jurusan(nilai_dict):
             return jurusan
     return max(skor, key=lambda j: skor[j])
 
-def generate_explanation(nilai_dict, jurusan_pilihan, label_final, syarat_ok, detail_syarat, feat_stats, feat_imp_sorted):
+def generate_explanation(nilai_dict, jurusan_pilihan, label_final, detail_syarat, feat_stats, feat_imp_sorted):
     mat = float(nilai_dict['matematika'])
     ipa = float(nilai_dict['ipa'])
     ips = float(nilai_dict['ips'])
@@ -290,7 +289,7 @@ def generate_explanation(nilai_dict, jurusan_pilihan, label_final, syarat_ok, de
         detail_nilai.append({
             'label': label_feat, 'nilai': nilai_siswa, 'rata2': mean_val,
             'status': status, 'selisih': selisih,
-            'importance': round(imp * 100, 2), 'terpenuhi': nilai_siswa >= mean_val
+            'importance': round(imp * 100, 2)
         })
     return {'alasan': alasan, 'detail_nilai': detail_nilai}
 
@@ -298,13 +297,11 @@ def predict_single(nama, nilai_dict, jurusan_pilihan, model_data):
     syarat_ok, detail_syarat = cek_syarat_jurusan(jurusan_pilihan, nilai_dict)
     label_final = 'Sesuai' if syarat_ok else 'Tidak Sesuai'
     rekomendasi_alternatif = None
-    rekomendasi_alternatif_nama = None
     if not syarat_ok:
         jurusan_lain = 'TKJ' if jurusan_pilihan == 'BDP' else 'BDP'
         ok_lain, _ = cek_syarat_jurusan(jurusan_lain, nilai_dict)
         alt = jurusan_lain if ok_lain else rekomendasikan_jurusan(nilai_dict)
         rekomendasi_alternatif = alt
-        rekomendasi_alternatif_nama = SYARAT_JURUSAN[alt]['nama_lengkap']
     
     X = np.array([[float(nilai_dict[f]) for f in FEATURES]])
     proba = model_data['model'].predict_proba(X)[0]
@@ -317,21 +314,19 @@ def predict_single(nama, nilai_dict, jurusan_pilihan, model_data):
     conf_sesuai = round(raw_sesuai * 100, 2)
     conf_tidak = round(raw_tidak * 100, 2)
     
-    explanation = generate_explanation(nilai_dict, jurusan_pilihan, label_final, syarat_ok, detail_syarat,
+    explanation = generate_explanation(nilai_dict, jurusan_pilihan, label_final, detail_syarat,
                                       model_data['feat_stats'], model_data['feat_imp_sorted'])
     return {
         'nama': nama, 'label': label_final, 'jurusan_pilihan': jurusan_pilihan,
         'jurusan_pilihan_nama': SYARAT_JURUSAN[jurusan_pilihan]['nama_lengkap'],
         'rekomendasi_alternatif': rekomendasi_alternatif,
-        'rekomendasi_alternatif_nama': rekomendasi_alternatif_nama,
         'confidence_sesuai': conf_sesuai, 'confidence_tidak': conf_tidak,
         'explanation': explanation, 'nilai': nilai_dict, 'syarat_detail': detail_syarat
     }
 
 # ============================================================
-# TRAINING BASELINE MODELS (untuk perbandingan)
+# TRAINING BASELINE MODELS (tanpa caching)
 # ============================================================
-@st.cache_resource
 def train_baseline_models(model_data):
     df_train = model_data['df_train']
     df_test = model_data['df_test']
@@ -348,75 +343,52 @@ def train_baseline_models(model_data):
         'Random Forest': RandomForestClassifier(random_state=42, n_estimators=100),
         'XGBoost': XGBClassifier(random_state=42, n_estimators=100, eval_metric='logloss')
     }
-    
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     results = {}
-    
     for name, clf in models.items():
         cv_scores_model = cross_val_score(clf, X_train, y_train, cv=skf, scoring='accuracy')
         clf.fit(X_train, y_train)
         y_pred = clf.predict(X_test)
         y_proba = clf.predict_proba(X_test)[:, 1] if hasattr(clf, "predict_proba") else None
-        
-        acc = accuracy_score(y_test, y_pred)
-        prec = precision_score(y_test, y_pred, pos_label=1)
-        rec = recall_score(y_test, y_pred, pos_label=1)
-        f1 = f1_score(y_test, y_pred, pos_label=1)
-        roc_auc = roc_auc_score(y_test, y_proba) if y_proba is not None else 0
-        mcc = matthews_corrcoef(y_test, y_pred)
-        kappa = cohen_kappa_score(y_test, y_pred)
-        
         results[name] = {
-            'accuracy': round(float(acc), 4),
-            'precision': round(float(prec), 4),
-            'recall': round(float(rec), 4),
-            'f1_score': round(float(f1), 4),
-            'roc_auc': round(float(roc_auc), 4),
-            'mcc': round(float(mcc), 4),
-            'kappa': round(float(kappa), 4),
-            'cv_scores': [round(float(s), 4) for s in cv_scores_model],
-            'cv_mean': round(float(np.mean(cv_scores_model)), 4),
-            'cv_std': round(float(np.std(cv_scores_model)), 4)
+            'accuracy': round(accuracy_score(y_test, y_pred), 4),
+            'precision': round(precision_score(y_test, y_pred, pos_label=1), 4),
+            'recall': round(recall_score(y_test, y_pred, pos_label=1), 4),
+            'f1_score': round(f1_score(y_test, y_pred, pos_label=1), 4),
+            'roc_auc': round(roc_auc_score(y_test, y_proba) if y_proba is not None else 0, 4),
+            'mcc': round(matthews_corrcoef(y_test, y_pred), 4),
+            'kappa': round(cohen_kappa_score(y_test, y_pred), 4),
+            'cv_scores': [round(s,4) for s in cv_scores_model],
+            'cv_mean': round(np.mean(cv_scores_model), 4),
+            'cv_std': round(np.std(cv_scores_model), 4)
         }
-    
-    # EBM
     model = model_data['model']
     y_pred_ebm = model.predict(X_test)
     y_proba_ebm = model.predict_proba(X_test)[:, model_data['idx_sesuai']]
-    acc_ebm = accuracy_score(y_test, y_pred_ebm)
-    prec_ebm = precision_score(y_test, y_pred_ebm, pos_label=1)
-    rec_ebm = recall_score(y_test, y_pred_ebm, pos_label=1)
-    f1_ebm = f1_score(y_test, y_pred_ebm, pos_label=1)
-    roc_auc_ebm = roc_auc_score(y_test, y_proba_ebm)
-    mcc_ebm = matthews_corrcoef(y_test, y_pred_ebm)
-    kappa_ebm = cohen_kappa_score(y_test, y_pred_ebm)
-    
     results['EBM'] = {
-        'accuracy': round(float(acc_ebm), 4),
-        'precision': round(float(prec_ebm), 4),
-        'recall': round(float(rec_ebm), 4),
-        'f1_score': round(float(f1_ebm), 4),
-        'roc_auc': round(float(roc_auc_ebm), 4),
-        'mcc': round(float(mcc_ebm), 4),
-        'kappa': round(float(kappa_ebm), 4),
-        'cv_scores': [round(float(s), 4) for s in cv_scores_ebm],
-        'cv_mean': round(float(np.mean(cv_scores_ebm)), 4),
-        'cv_std': round(float(np.std(cv_scores_ebm)), 4)
+        'accuracy': round(accuracy_score(y_test, y_pred_ebm), 4),
+        'precision': round(precision_score(y_test, y_pred_ebm, pos_label=1), 4),
+        'recall': round(recall_score(y_test, y_pred_ebm, pos_label=1), 4),
+        'f1_score': round(f1_score(y_test, y_pred_ebm, pos_label=1), 4),
+        'roc_auc': round(roc_auc_score(y_test, y_proba_ebm), 4),
+        'mcc': round(matthews_corrcoef(y_test, y_pred_ebm), 4),
+        'kappa': round(cohen_kappa_score(y_test, y_pred_ebm), 4),
+        'cv_scores': [round(s,4) for s in cv_scores_ebm],
+        'cv_mean': round(np.mean(cv_scores_ebm), 4),
+        'cv_std': round(np.std(cv_scores_ebm), 4)
     }
-    
     # Uji statistik paired t-test
     ebm_scores = np.array(cv_scores_ebm)
     stats_results = {}
     for name, res in results.items():
-        if name == 'EBM':
-            continue
+        if name == 'EBM': continue
         baseline_scores = np.array(res['cv_scores'])
         if len(ebm_scores) == len(baseline_scores) and len(ebm_scores) > 0:
             t_stat, p_value = stats.ttest_rel(ebm_scores, baseline_scores)
             stats_results[name] = {
-                't_statistic': round(float(t_stat), 4),
-                'p_value': round(float(p_value), 4),
-                'significantly_better': bool(p_value < 0.05 and np.mean(ebm_scores) > np.mean(baseline_scores))
+                't_statistic': round(t_stat,4),
+                'p_value': round(p_value,4),
+                'significantly_better': p_value < 0.05 and np.mean(ebm_scores) > np.mean(baseline_scores)
             }
     return results, stats_results
 
@@ -440,16 +412,16 @@ if menu == "Prediksi Individu":
     st.header("📝 Input Nilai Siswa")
     with st.form("pred_form"):
         nama = st.text_input("Nama Siswa", value="Siswa")
-        jurusan = st.selectbox("Jurusan yang Dipilih", options=["TKJ", "BDP"], 
+        jurusan = st.selectbox("Jurusan yang Dipilih", options=["TKJ","BDP"], 
                                format_func=lambda x: f"{x} — {SYARAT_JURUSAN[x]['nama_lengkap']}")
         col1, col2 = st.columns(2)
         with col1:
-            matematika = st.number_input("Matematika", 0, 100, 75)
-            ipa = st.number_input("IPA", 0, 100, 75)
-            ips = st.number_input("IPS", 0, 100, 75)
+            matematika = st.number_input("Matematika",0,100,75)
+            ipa = st.number_input("IPA",0,100,75)
+            ips = st.number_input("IPS",0,100,75)
         with col2:
-            bind = st.number_input("Bahasa Indonesia", 0, 100, 75)
-            bing = st.number_input("Bahasa Inggris", 0, 100, 75)
+            bind = st.number_input("Bahasa Indonesia",0,100,75)
+            bing = st.number_input("Bahasa Inggris",0,100,75)
         submitted = st.form_submit_button("🔍 Prediksi Kesesuaian", use_container_width=True)
     
     if submitted:
@@ -467,16 +439,15 @@ if menu == "Prediksi Individu":
         colA.metric("Keyakinan Model (Sesuai)", f"{result['confidence_sesuai']}%")
         colB.metric("Keyakinan Model (Tidak Sesuai)", f"{result['confidence_tidak']}%")
         if result['rekomendasi_alternatif']:
-            st.info(f"💡 **Rekomendasi Alternatif:** {result['rekomendasi_alternatif']} — {result['rekomendasi_alternatif_nama']}")
+            st.info(f"💡 **Rekomendasi Alternatif:** {result['rekomendasi_alternatif']} — {SYARAT_JURUSAN[result['rekomendasi_alternatif']]['nama_lengkap']}")
         
         with st.expander("🧠 Penjelasan Keputusan Model EBM", expanded=True):
-            for i, a in enumerate(result['explanation']['alasan'], 1):
+            for i, a in enumerate(result['explanation']['alasan'],1):
                 st.write(f"{i}. {a}")
         with st.expander("📈 Analisis Nilai vs Rata-rata Data Latih"):
             df_det = pd.DataFrame(result['explanation']['detail_nilai'])
-            df_det['Selisih'] = df_det.apply(lambda r: f"+{r['selisih']}" if r['selisih'] >= 0 else str(r['selisih']), axis=1)
-            st.dataframe(df_det[['label', 'nilai', 'rata2', 'Selisih', 'importance']], use_container_width=True)
-            st.caption("Rata-rata dihitung dari data latih. Kesesuaian ditentukan oleh syarat minimum ≥70.")
+            df_det['Selisih'] = df_det.apply(lambda r: f"+{r['selisih']}" if r['selisih']>=0 else str(r['selisih']), axis=1)
+            st.dataframe(df_det[['label','nilai','rata2','Selisih','importance']], use_container_width=True)
         if result['syarat_detail']:
             with st.expander("📋 Detail Syarat Jurusan"):
                 for col, info in result['syarat_detail'].items():
@@ -487,17 +458,17 @@ if menu == "Prediksi Individu":
 elif menu == "Prediksi Batch (Excel)":
     st.header("📂 Prediksi Banyak Siswa (Upload Excel)")
     st.markdown("Kolom wajib: **Nama, Matematika, IPA, IPS, Bahasa_Indonesia, Bahasa_Inggris**. Opsional: **Jurusan_Pilihan** (TKJ/BDP).")
-    uploaded = st.file_uploader("Pilih file Excel", type=["xlsx", "xls"])
+    uploaded = st.file_uploader("Pilih file Excel", type=["xlsx","xls"])
     if uploaded:
         df = pd.read_excel(uploaded)
         # Normalisasi kolom
         rename = {}
         for c in df.columns:
             c_low = c.lower().strip().replace(' ', '_')
-            if c_low in ['nama', 'matematika', 'ipa', 'ips', 'bahasa_indonesia', 'bahasa_inggris', 'jurusan_pilihan']:
+            if c_low in ['nama','matematika','ipa','ips','bahasa_indonesia','bahasa_inggris','jurusan_pilihan']:
                 rename[c] = c_low
         df = df.rename(columns=rename)
-        required = ['nama', 'matematika', 'ipa', 'ips', 'bahasa_indonesia', 'bahasa_inggris']
+        required = ['nama','matematika','ipa','ips','bahasa_indonesia','bahasa_inggris']
         if not all(r in df.columns for r in required):
             st.error(f"Kolom wajib tidak lengkap. Dibutuhkan: {required}")
         else:
@@ -518,8 +489,8 @@ elif menu == "Prediksi Batch (Excel)":
                             jur = rekomendasikan_jurusan(nilai)
                         res = predict_single(nama, nilai, jur, model_data)
                         results.append(res)
-                    except:
-                        results.append({"nama": nama, "label": "Error", "error": True})
+                    except Exception as e:
+                        results.append({"nama": nama, "label": "Error", "error": str(e)})
                 st.success(f"✅ {len(results)} siswa diproses.")
                 df_out = pd.DataFrame([{
                     'Nama': r['nama'],
@@ -566,10 +537,10 @@ elif menu == "Evaluasi Model":
     # Confusion Matrix
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
     fig_cm = go.Figure(data=go.Heatmap(
-        z=[[tn, fp], [fn, tp]],
-        x=['Pred Tidak Sesuai', 'Pred Sesuai'],
-        y=['Actual Tidak Sesuai', 'Actual Sesuai'],
-        text=[[tn, fp], [fn, tp]], texttemplate="%{text}", colorscale='Blues'
+        z=[[tn,fp],[fn,tp]],
+        x=['Pred Tidak Sesuai','Pred Sesuai'],
+        y=['Actual Tidak Sesuai','Actual Sesuai'],
+        text=[[tn,fp],[fn,tp]], texttemplate="%{text}", colorscale='Blues'
     ))
     fig_cm.update_layout(title="Confusion Matrix", height=400)
     st.plotly_chart(fig_cm, use_container_width=True)
